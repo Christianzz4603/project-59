@@ -2,6 +2,7 @@
 # Builds Ghidra's real console decompiler (upstream sources, unmodified) WITHOUT libbfd.
 # It reads binaries in Ghidra's XML <binaryimage> format, so no GPL loader is involved.
 # Usage: bash build_console.sh <ghidra-checkout> <output-dir>
+# Optional env: CXX (compiler), OPT (default -O1), EXTRA_CXXFLAGS, EXTRA_LDFLAGS
 set -euo pipefail
 SRC="${1:?ghidra checkout}"; OUT="${2:?output dir}"
 CPP="$SRC/Ghidra/Features/Decompiler/src/decompile/cpp"
@@ -21,8 +22,11 @@ echo "libbfd users excluded: $(tr '\n' ' ' < "$OUT/bfd_users.txt")"
 
 echo "compiling $(wc -l < "$OUT/sources.txt") files with $(nproc) jobs"
 CXX="${CXX:-g++}"
-compile() { f="$1"; "$CXX" -std=c++11 -O1 -D__TERMINAL__ -Wno-sign-compare -c "$f" -o "$OUT/obj/${f%.cc}.o"; }
-export -f compile; export CXX OUT
+OPT="${OPT:--O1}"
+EXTRA_CXXFLAGS="${EXTRA_CXXFLAGS:-}"
+EXTRA_LDFLAGS="${EXTRA_LDFLAGS:-}"
+compile() { f="$1"; "$CXX" -std=c++11 $OPT -D__TERMINAL__ -Wno-sign-compare $EXTRA_CXXFLAGS -c "$f" -o "$OUT/obj/${f%.cc}.o"; }
+export -f compile; export CXX OUT OPT EXTRA_CXXFLAGS
 xargs -P "$(nproc)" -I{} bash -c 'compile {}' < "$OUT/sources.txt"
-"$CXX" -o "$OUT/decomp_console" "$OUT"/obj/*.o -lz
+"$CXX" $EXTRA_LDFLAGS -o "$OUT/decomp_console" "$OUT"/obj/*.o -lz
 echo "built $OUT/decomp_console"

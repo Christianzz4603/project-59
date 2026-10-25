@@ -1,0 +1,106 @@
+name: Phase 2 - Android arm64 build (NDK)
+
+# Cross-compiles the REAL Ghidra decompiler for Android arm64-v8a and publishes a Termux-ready bundle.
+# CI can only check that the binary is built and well-formed. It is NOT run on a device here.
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'native/**'
+      - 'tools/**'
+      - 'tests/**'
+      - 'packaging/**'
+      - '.github/workflows/phase2-android.yml'
+
+permissions:
+  contents: write
+
+env:
+  GHIDRA_COMMIT: 164003036607e669226647bd0f7bedaf281e56a6
+  BUNDLE: ghidra-decomp-android-arm64
+
+jobs:
+  android-arm64:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu zlib1g-dev python3 file
+
+      - name: Fetch pinned upstream Ghidra (sparse)
+        run: |
+          git clone --filter=blob:none --no-checkout https://github.com/NationalSecurityAgency/ghidra.git ghidra
+          cd ghidra
+          git sparse-checkout set Ghidra/Features/Decompiler Ghidra/Processors/AARCH64 Ghidra/Processors/x86
+          git checkout "$GHIDRA_COMMIT"
+
+      - name: Build SLEIGH compiler (host, upstream Makefile)
+        working-directory: ghidra/Ghidra/Features/Decompiler/src/decompile/cpp
+        run: make -j"$(nproc)" OPT_CXXFLAGS="-O1 -Wno-sign-compare" sleigh_opt
+
+      - name: Generate processor specs
+        run: |
+          SLEIGH="$PWD/ghidra/Ghidra/Features/Decompiler/src/decompile/cpp/sleigh_opt"
+          mkdir -p pkg/specs pkg/samples pkg/tools
+          for p in AARCH64 x86; do cp ghidra/Ghidra/Processors/$p/data/languages/*.ldefs ghidra/Ghidra/Processors/$p/data/languages/*.pspec ghidra/Ghidra/Processors/$p/data/languages/*.cspec pkg/specs/; done
+          "$SLEIGH" ghidra/Ghidra/Processors/AARCH64/data/languages/AARCH64.slaspec pkg/specs/AARCH64.sla
+          "$SLEIGH" ghidra/Ghidra/Processors/x86/data/languages/x86-64.slaspec pkg/specs/x86-64.sla
+
+      - name: Cross-compile decompiler with the Android NDK
+        run: |
+          NDK="${ANDROID_NDK_LATEST_HOME:-${ANDROID_NDK_ROOT:-}}"
+          test -d "$NDK" || { echo "Android NDK not found on runner"; exit 1; }
+          grep Pkg.Revision "$NDK/source.properties"
+          TC="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          export CXX="$TC/aarch64-linux-android28-clang++"
+          export OPT=-O2 EXTRA_CXXFLAGS="-fPIE" EXTRA_LDFLAGS="-pie -static-libstdc++ -Wl,--gc-sections"
+          bash native/build_console.sh "$PWD/ghidra" "$PWD/out-android"
+          "$TC/llvm-strip" -o pkg/decomp_console out-android/decomp_console
+          echo "--- binary checks"
+          file pkg/decomp_console
+          "$TC/llvm-readelf" -h pkg/decomp_console | grep -E 'Machine|Type'
+          "$TC/llvm-readelf" -d pkg/decomp_console | grep NEEDED
+          "$TC/llvm-readelf" -l pkg/decomp_console | grep -i interpreter
+          ls -la pkg/decomp_console
+
+      - name: Verify the binary is a bionic arm64 executable
+        run: |
+          file pkg/decomp_console | grep -q 'ARM aarch64' || { echo "not aarch64"; exit 1; }
+          file pkg/decomp_console | grep -q '/system/bin/linker64' || { echo "not an Android (bionic) executable"; exit 1; }
+
+      - name: Build bundled sample and package
+        run: |
+          aarch64-linux-gnu-gcc -O1 -fno-stack-protector -fno-asynchronous-unwind-tables -nostdlib -static -fno-pie -no-pie -o pkg/samples/sample_aarch64 tests/sample.c
+          cp tests/sample.c pkg/samples/sample.c
+          cp tools/elf2xml.py pkg/tools/
+          (cd pkg && python3 tools/elf2xml.py samples/sample_aarch64 AARCH64:LE:64:v8A:default samples/sample_aarch64.xml samples/sample_aarch64.script sum_squares sum_to_n_squared fnv1a clamp_sum)
+          cp packaging/run_sample.sh packaging/analyze.sh packaging/README.txt pkg/
+          cp ghidra/LICENSE ghidra/NOTICE pkg/
+          chmod +x pkg/decomp_console pkg/*.sh
+          mkdir -p dist
+          cp -r pkg "dist/$BUNDLE"
+          tar -C dist -czf "$BUNDLE.tar.gz" "$BUNDLE"
+          sha256sum "$BUNDLE.tar.gz" | tee "$BUNDLE.tar.gz.sha256"
+          ls -la "$BUNDLE.tar.gz"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.BUNDLE }}
+          path: |
+            ${{ env.BUNDLE }}.tar.gz
+            ${{ env.BUNDLE }}.tar.gz.sha256
+
+      - name: Publish rolling prerelease for Termux download
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete phase2-android --cleanup-tag -y || true
+          gh release create phase2-android "$BUNDLE.tar.gz" "$BUNDLE.tar.gz.sha256" \
+            --prerelease --target "$GITHUB_SHA" \
+            --title "Phase 2 Android arm64 test build ($GITHUB_SHA)" \
+            --notes "Real Ghidra decompiler cross-compiled with the Android NDK. Built in CI only; not yet verified on a device. See README.txt inside."
