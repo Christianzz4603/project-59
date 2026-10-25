@@ -1,0 +1,56 @@
+name: Diagnostic - compiler/stdlib matrix (host)
+
+# Tries to reproduce the on-device hang at 'load file' using NDK-like toolchain choices on a host runner.
+
+on:
+  workflow_dispatch:
+
+env:
+  GHIDRA_COMMIT: 164003036607e669226647bd0f7bedaf281e56a6
+
+jobs:
+  matrix:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: clang-libcxx-O2, cxx: 'clang++ -stdlib=libc++', opt: '-O2', ldf: '-stdlib=libc++' }
+          - { name: clang-libcxx-O0, cxx: 'clang++ -stdlib=libc++', opt: '-O0', ldf: '-stdlib=libc++' }
+          - { name: clang-libstdcxx-O2, cxx: 'clang++', opt: '-O2', ldf: '' }
+          - { name: gcc-O2, cxx: 'g++', opt: '-O2', ldf: '' }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu zlib1g-dev python3 clang libc++-dev libc++abi-dev
+      - name: Fetch pinned upstream Ghidra (sparse)
+        run: |
+          git clone --filter=blob:none --no-checkout https://github.com/NationalSecurityAgency/ghidra.git ghidra
+          cd ghidra
+          git sparse-checkout set Ghidra/Features/Decompiler Ghidra/Processors/AARCH64 Ghidra/Processors/x86
+          git checkout "$GHIDRA_COMMIT"
+      - name: Build SLEIGH compiler and specs
+        run: |
+          make -C ghidra/Ghidra/Features/Decompiler/src/decompile/cpp -j"$(nproc)" OPT_CXXFLAGS="-O1 -Wno-sign-compare" sleigh_opt
+          SLEIGH="$PWD/ghidra/Ghidra/Features/Decompiler/src/decompile/cpp/sleigh_opt"
+          mkdir -p specs
+          for p in AARCH64 x86; do cp ghidra/Ghidra/Processors/$p/data/languages/*.ldefs ghidra/Ghidra/Processors/$p/data/languages/*.pspec ghidra/Ghidra/Processors/$p/data/languages/*.cspec specs/; done
+          "$SLEIGH" ghidra/Ghidra/Processors/AARCH64/data/languages/AARCH64.slaspec specs/AARCH64.sla
+          "$SLEIGH" ghidra/Ghidra/Processors/x86/data/languages/x86-64.slaspec specs/x86-64.sla
+      - name: Build decompiler (${{ matrix.name }})
+        run: |
+          export CXX='${{ matrix.cxx }}' OPT='${{ matrix.opt }}' EXTRA_LDFLAGS='${{ matrix.ldf }}'
+          bash native/build_console.sh "$PWD/ghidra" "$PWD/out"
+      - name: Run sample with a 90 second limit
+        run: |
+          aarch64-linux-gnu-gcc -O1 -fno-stack-protector -fno-asynchronous-unwind-tables -nostdlib -static -fno-pie -no-pie -o sample_aarch64 tests/sample.c
+          python3 tools/elf2xml.py sample_aarch64 AARCH64:LE:64:v8A:default a64.xml a64.script sum_squares fnv1a
+          set +e
+          timeout 90 ./out/decomp_console -s "$PWD/specs" < a64.script > a64.out 2>&1
+          rc=$?
+          echo "exit code: $rc (124 = timed out = HANG)"
+          head -12 a64.out
+          grep -q 'successfully loaded' a64.out && grep -q 'Decompilation complete' a64.out
