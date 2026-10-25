@@ -49,7 +49,7 @@ jobs:
           ls -la specs/*.sla
 
       - name: Build real console decompiler (no libbfd)
-        run: ./native/build_console.sh "$PWD/ghidra" "$PWD/out"
+        run: bash native/build_console.sh "$PWD/ghidra" "$PWD/out"
 
       - name: Build AArch64 and x86-64 test ELFs
         run: |
