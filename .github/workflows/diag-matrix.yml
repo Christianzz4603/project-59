@@ -16,10 +16,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { name: clang-libcxx-O2, cxx: 'clang++ -stdlib=libc++', opt: '-O2', ldf: '-stdlib=libc++' }
-          - { name: clang-libcxx-O0, cxx: 'clang++ -stdlib=libc++', opt: '-O0', ldf: '-stdlib=libc++' }
-          - { name: clang-libstdcxx-O2, cxx: 'clang++', opt: '-O2', ldf: '' }
-          - { name: gcc-O2, cxx: 'g++', opt: '-O2', ldf: '' }
+          - { name: clang-libcxx-O2, cxx: 'clang++', cxxf: '-stdlib=libc++', opt: '-O2', ldf: '-stdlib=libc++' }
+          - { name: clang-libcxx-O1, cxx: 'clang++', cxxf: '-stdlib=libc++', opt: '-O1', ldf: '-stdlib=libc++' }
     steps:
       - uses: actions/checkout@v4
       - name: Install tools
@@ -42,7 +40,7 @@ jobs:
           "$SLEIGH" ghidra/Ghidra/Processors/x86/data/languages/x86-64.slaspec specs/x86-64.sla
       - name: Build decompiler (${{ matrix.name }})
         run: |
-          export CXX='${{ matrix.cxx }}' OPT='${{ matrix.opt }}' EXTRA_LDFLAGS='${{ matrix.ldf }}'
+          export CXX='${{ matrix.cxx }}' OPT='${{ matrix.opt }}' EXTRA_CXXFLAGS='${{ matrix.cxxf }}' EXTRA_LDFLAGS='${{ matrix.ldf }}'
           bash native/build_console.sh "$PWD/ghidra" "$PWD/out"
       - name: Run sample with a 90 second limit
         run: |
