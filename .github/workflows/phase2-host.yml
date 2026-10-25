@@ -70,13 +70,14 @@ jobs:
           python3 tools/elf2xml.py sample_x64 "x86:LE:64:default:gcc" "$PWD/x64.xml" x64.script $FUNCS
           ./out/decomp_console -s "$PWD/specs" < x64.script 2>&1 | tee x64.out
 
-      - name: Check results
+      - name: Check results (assert on real decompiled C, not echoed commands)
         run: |
           for f in a64.out x64.out; do
-            for fn in sum_squares sum_to_n_squared fnv1a clamp_sum; do
-              grep -q "$fn" $f || { echo "MISSING $fn in $f"; exit 1; }
-            done
-            grep -qE 'return|while|for \(' $f || { echo "no C control flow in $f"; exit 1; }
+            test "$(grep -c '^Decompilation complete' $f)" = 4 || { echo "expected 4 completed decompilations in $f"; exit 1; }
+            grep -qE '^int4 sum_squares\(int4 param_1,int4 param_2\)' $f || { echo "bad sum_squares signature in $f"; exit 1; }
+            grep -qE '^uint4 fnv1a\(uint1 \*param_1,uint4 param_2\)' $f || { echo "bad fnv1a signature in $f"; exit 1; }
+            grep -q '0x811c9dc5' $f || { echo "FNV constant missing in $f"; exit 1; }
+            if grep -qiE 'unable|error|exception' $f; then echo "error text in $f"; grep -niE 'unable|error|exception' $f; exit 1; fi
           done
           echo "## Real decompiler output (AArch64)" >> "$GITHUB_STEP_SUMMARY"
           echo '```c' >> "$GITHUB_STEP_SUMMARY"; cat a64.out >> "$GITHUB_STEP_SUMMARY"; echo '```' >> "$GITHUB_STEP_SUMMARY"
@@ -90,3 +91,4 @@ jobs:
             x64.out
             a64.xml
             out/sources.txt
+            out/bfd_users.txt
